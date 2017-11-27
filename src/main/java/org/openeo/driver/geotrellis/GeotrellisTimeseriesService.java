@@ -1,16 +1,25 @@
 package org.openeo.driver.geotrellis;
 
 import be.vito.eodata.extracttimeseries.geotrellis.ComputeStatsGeotrellis;
+import be.vito.eodata.extracttimeseries.geotrellis.MeanResult;
+import be.vito.eodata.processing.MaskedStatisticsProcessor;
+import geotrellis.raster.CellGrid;
+import geotrellis.raster.MultibandTile;
 import geotrellis.raster.Tile;
 import geotrellis.spark.ContextRDD;
 import geotrellis.spark.SpaceTimeKey;
+import geotrellis.spark.TemporalKey;
 import geotrellis.spark.TileLayerMetadata;
 import geotrellis.spark.io.Intersects;
 import geotrellis.vector.Point;
 import org.apache.spark.SparkContext;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.rdd.RDD;
 import scala.Some;
+import scala.Tuple2;
 
 import javax.inject.Singleton;
+import javax.json.JsonArray;
 import javax.json.JsonObject;
 import javax.ws.rs.*;
 import javax.ws.rs.core.MediaType;
@@ -19,14 +28,14 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.TemporalQuery;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
 
 @Path("v0.1/timeseries")
 @Singleton
 public class GeotrellisTimeseriesService {
 
-    private final DateTimeFormatter dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private ComputeStatsGeotrellis computeStatsGeotrellis = new ComputeStatsGeotrellis();
+
     private Optional<ZonedDateTime> parseDateTime(String dateStr) {
         if (dateStr.length() == 0) {
             return Optional.empty();
@@ -64,7 +73,7 @@ public class GeotrellisTimeseriesService {
     @Path("/point")
     @Consumes({ MediaType.APPLICATION_JSON })
     @Produces(MediaType.APPLICATION_JSON)
-    public String pointTimeSeries(
+    public TimeSeriesResponse pointTimeSeries(
                                   @DefaultValue("") @QueryParam("startDate") String startDateStr,
                                   @DefaultValue("") @QueryParam("endDate") String endDateStr,
                                   @QueryParam("x") double x,
@@ -72,38 +81,65 @@ public class GeotrellisTimeseriesService {
                                   @DefaultValue("EPSG:4326") @QueryParam("srs") String srs,
 
                                   JsonObject processGraph ){
-        System.out.println("x = " + x);
-        System.out.println("processGraph = " + processGraph);
-
-
-
         ViewParams viewingParameters = ViewParams.builder().bbox(Point.apply(x, y).buffer(0.01).envelope()).start(parseDateTime(startDateStr)).end(parseDateTime(endDateStr)).build();
         ContextRDD<SpaceTimeKey, Tile, TileLayerMetadata<SpaceTimeKey>> layer = graphToRdd(processGraph, viewingParameters);
         try{
-
+            RDD<Tuple2<TemporalKey, MeanResult>> timeseries = computeStatsGeotrellis.computePointAverageTimeSeries(x, y, 1.0, 0.0, layer.rdd(), layer.metadata(), SparkContext.getOrCreate());
+            return formatResponse(timeseries.toJavaRDD());
         }finally {
             SparkContext.getOrCreate().cleaner().get().registerRDDForCleanup(layer);
         }
-        return "{'test':'test'}";
+
     }
 
-    private ContextRDD<SpaceTimeKey,Tile,TileLayerMetadata<SpaceTimeKey>> graphToRdd(JsonObject processGraph, ViewParams viewingParameters) {
+    private static final DateTimeFormatter dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+    public static TimeSeriesResponse formatResponse( // TODO rename to formatMeanReponse
+                                                     JavaRDD<Tuple2<TemporalKey, MeanResult>> ts
+    ) {
+        SparkContext.getOrCreate().cleaner().get().registerRDDForCleanup(ts.rdd());
+        List<Tuple2<TemporalKey, MeanResult>> tsResults = ts.collect();
+
+        Map<String, MaskedStatisticsProcessor.StatsMeanResult> results = new TreeMap<>();
+        for (Tuple2<TemporalKey, MeanResult> tsVal : tsResults) {
+            MeanResult meanResult = tsVal._2();
+            MaskedStatisticsProcessor.StatsMeanResult result = new MaskedStatisticsProcessor.StatsMeanResult(meanResult.meanPhysical(), meanResult.total(), meanResult.valid());
+            results.put(dateFormat.format(tsVal._1().time()), result);
+        }
+        return new MeanTimeSeriesResponse(results);
+    }
+
+    private <V  extends CellGrid> ContextRDD<SpaceTimeKey,V,TileLayerMetadata<SpaceTimeKey>> graphToRdd(JsonObject processGraph, ViewParams viewingParameters) {
 
         String product = processGraph.getString("product_id");
         if (product != null) {
             return getProductRDD(product,viewingParameters);
         }
         String processId = processGraph.getString("process_id");
-        return getProcessRDD(processId, processGraph.getJsonObject("args"));
-
+        return getProcessRDD(processId, processGraph.getJsonObject("args"),viewingParameters);
     }
 
-    private ContextRDD<SpaceTimeKey,Tile,TileLayerMetadata<SpaceTimeKey>> getProcessRDD(String processId, JsonObject args) {
-
-        return null;
+    private <V  extends CellGrid> ContextRDD<SpaceTimeKey,V,TileLayerMetadata<SpaceTimeKey>> getProcessRDD(String processId, JsonObject args, ViewParams viewingParameters) {
+        JsonObject imagery = args.getJsonObject("imagery");
+        Objects.requireNonNull(imagery,"Required variable imagery should not be null in process: "+processId);
+        switch (processId) {
+            case "band_arithmetic":
+                String function = args.getString("function");
+                JsonArray bands = args.getJsonArray("bands");
+                Objects.requireNonNull(function,"Required variable function should not be null in process: "+processId);
+                Objects.requireNonNull(bands,"Required variable bands should not be null in process: "+processId);
+                ContextRDD<SpaceTimeKey, MultibandTile, TileLayerMetadata<SpaceTimeKey>> imageryRDD = graphToRdd(imagery, viewingParameters);
+                return (ContextRDD<SpaceTimeKey, V, TileLayerMetadata<SpaceTimeKey>>) bandArithmetic(bands,function, imageryRDD);
+            default:
+                throw new IllegalArgumentException("Unsupported process id: " + processId + " for Geotrellis backend.");
+        }
     }
 
-    private ContextRDD<SpaceTimeKey,Tile,TileLayerMetadata<SpaceTimeKey>> getProductRDD(String product, ViewParams viewingParameters) {
-        return new ComputeStatsGeotrellis().readMultiBandLayer(product, viewingParameters.getStartDate().get(), viewingParameters.getEndDate().get(), Some.apply(Intersects.apply(viewingParameters.getBbox().get())), SparkContext.getOrCreate());
+    private ContextRDD<SpaceTimeKey, Tile, TileLayerMetadata<SpaceTimeKey>> bandArithmetic(JsonArray bands, String function, ContextRDD<SpaceTimeKey, MultibandTile, TileLayerMetadata<SpaceTimeKey>> inputRDD) {
+        return OpenEOGeotrellisHelper.bandArithmetic(bands, function, inputRDD);
+    }
+
+    private <V  extends CellGrid> ContextRDD<SpaceTimeKey,V,TileLayerMetadata<SpaceTimeKey>> getProductRDD(String product, ViewParams viewingParameters) {
+        return computeStatsGeotrellis.readMultiBandLayer(product, viewingParameters.getStartDate().get(), viewingParameters.getEndDate().get(), Some.apply(Intersects.apply(viewingParameters.getBbox().get())), SparkContext.getOrCreate());
     }
 }
