@@ -1,4 +1,4 @@
-package org.openeo.driver.geotrellis;
+package org.openeo.model.timeseries;
 
 import org.codehaus.jackson.map.annotate.JsonSerialize;
 

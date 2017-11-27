@@ -15,6 +15,8 @@ import geotrellis.vector.Point;
 import org.apache.spark.SparkContext;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.rdd.RDD;
+import org.openeo.model.timeseries.MeanTimeSeriesResponse;
+import org.openeo.model.timeseries.TimeSeriesResponse;
 import scala.Some;
 import scala.Tuple2;
 
