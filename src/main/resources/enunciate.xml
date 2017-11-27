@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<enunciate
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://enunciate.webcohesion.com/schemas/enunciate-2.10.0.xsd">
+    <title>geotrellis-driver</title>
+    <copyright>VITO</copyright>
+
+    <facets>
+        <exclude name="hideDocs" />
+    </facets>
+
+    <namespaces default="org.openeo" />
+
+    <api-classes>
+        <exclude pattern="**" />
+        <include pattern="org.openeo.driver.geotrellis.GeotrellisTimeseriesService" />
+        <include pattern="org.openeo.driver.geotrellis.GeotrellisJobService" />
+    </api-classes>
+
+    <modules>
+        <spring-app disabled="true" />
+        <java-client disabled="true"/>
+        <c disabled="true"/>
+        <csharp disabled="true"/>
+        <cxf disabled="true"/>
+        <amf disabled="true"/>
+        <gwt disabled="true"/>
+        <jackson1 disabled="true"/>
+        <jaxws-client disabled="true"/>
+        <jaxws-ri disabled="true"/>
+        <obj-c disabled="true"/>
+        <ruby disabled="true"/>
+        <xfire disabled="true"/>
+        <xfire-client disabled="true"/>
+        <xml disabled="true"/>
+
+        <docs disabled="false" apiRelativePath="." />
+        <swagger basePath="/" />
+
+    </modules>
+</enunciate>
