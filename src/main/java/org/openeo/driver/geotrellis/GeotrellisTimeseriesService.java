@@ -11,7 +11,11 @@ import geotrellis.spark.SpaceTimeKey;
 import geotrellis.spark.TemporalKey;
 import geotrellis.spark.TileLayerMetadata;
 import geotrellis.spark.io.Intersects;
+import geotrellis.spark.io.accumulo.AccumuloAttributeStore;
+import geotrellis.spark.io.accumulo.AccumuloInstance;
+import geotrellis.spark.io.accumulo.AccumuloInstance$;
 import geotrellis.vector.Point;
+import org.apache.accumulo.core.client.security.tokens.KerberosToken;
 import org.apache.spark.SparkContext;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.rdd.RDD;
@@ -19,18 +23,21 @@ import org.openeo.model.timeseries.MeanTimeSeriesResponse;
 import org.openeo.model.timeseries.TimeSeriesResponse;
 import scala.Some;
 import scala.Tuple2;
+import scala.collection.JavaConverters;
 
 import javax.inject.Singleton;
 import javax.json.JsonArray;
 import javax.json.JsonObject;
 import javax.ws.rs.*;
 import javax.ws.rs.core.MediaType;
+import java.io.IOException;
 import java.text.ParsePosition;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.TemporalQuery;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Path("v0.1/timeseries")
 @Singleton
@@ -70,6 +77,15 @@ public class GeotrellisTimeseriesService {
         throw new DateTimeParseException("Text '" + text + "' could not be parsed", text, 0);
     }
 
+    @GET
+    @Path("/layers")
+    @Produces(MediaType.APPLICATION_JSON)
+    public List<String> getLayers() throws IOException {
+        KerberosToken token = new KerberosToken();
+        AccumuloInstance instance = AccumuloInstance$.MODULE$.apply("hdp-accumulo-instance", "epod6.vgt.vito.be:2181,epod17.vgt.vito.be:2181,epod1.vgt.vito.be:2181", token.getPrincipal(), token);
+        AccumuloAttributeStore attributeStore = AccumuloAttributeStore.apply(instance);
+        return JavaConverters.seqAsJavaListConverter(attributeStore.layerIds()).asJava().stream().map(id -> id.name()).collect(Collectors.toList());
+    }
 
     @POST
     @Path("/point")
@@ -113,12 +129,14 @@ public class GeotrellisTimeseriesService {
 
     private <V  extends CellGrid> ContextRDD<SpaceTimeKey,V,TileLayerMetadata<SpaceTimeKey>> graphToRdd(JsonObject processGraph, ViewParams viewingParameters) {
 
-        String product = processGraph.getString("product_id");
-        if (product != null) {
-            return getProductRDD(product,viewingParameters);
+        if (processGraph.containsKey("product_id")) {
+            return getProductRDD(processGraph.getString("product_id"),viewingParameters);
+        } else if (processGraph.containsKey("process_id")) {
+            String processId = processGraph.getString("process_id");
+            return getProcessRDD(processId, processGraph.getJsonObject("args"),viewingParameters);
+        }else{
+            throw new IllegalArgumentException("Expected either 'product_id' or 'process_id' in: " + processGraph.toString());
         }
-        String processId = processGraph.getString("process_id");
-        return getProcessRDD(processId, processGraph.getJsonObject("args"),viewingParameters);
     }
 
     private <V  extends CellGrid> ContextRDD<SpaceTimeKey,V,TileLayerMetadata<SpaceTimeKey>> getProcessRDD(String processId, JsonObject args, ViewParams viewingParameters) {
@@ -142,6 +160,6 @@ public class GeotrellisTimeseriesService {
     }
 
     private <V  extends CellGrid> ContextRDD<SpaceTimeKey,V,TileLayerMetadata<SpaceTimeKey>> getProductRDD(String product, ViewParams viewingParameters) {
-        return computeStatsGeotrellis.readMultiBandLayer(product, viewingParameters.getStartDate().get(), viewingParameters.getEndDate().get(), Some.apply(Intersects.apply(viewingParameters.getBbox().get())), SparkContext.getOrCreate());
+        return (ContextRDD<SpaceTimeKey,V,TileLayerMetadata<SpaceTimeKey>>)computeStatsGeotrellis.readMultiBandLayer(product, viewingParameters.getStartDate().orElse(null), viewingParameters.getEndDate().orElse(null), Some.apply(Intersects.apply(viewingParameters.getBbox().orElse(null))), SparkContext.getOrCreate());
     }
 }
